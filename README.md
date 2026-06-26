@@ -227,9 +227,9 @@ This project started as a thought experiment and grew through a **human + multi-
 
 | Role | Who | What they did |
 |---|---|---|
-| 💡 **Design** | 知行 (Zen) | Conceived the game, chose the "leek" theme, guided every iteration |
-| 🏗️ **Architecture** | DeepSeek Pro | Wrote the core engine, career system, NG+ mode, market simulation |
-| 🛠️ **Playtesting** | DeepSeek Flash ("阿智") | Played through 10+ runs, found bugs, suggested QoL features |
+| 💡 **Design** | Asti-Z | Conceived the game, chose the "leek" theme, guided every iteration |
+| 🏗️ **Architecture** | DeepSeek-V4-Pro | Wrote the core engine, career system, NG+ mode, market simulation |
+| 🛠️ **Playtesting** | DeepSeek-V4-Flash| Played through 10+ runs, found bugs, suggested QoL features |
 | 🎣 **Inspiration** | tutusagi | Created the original [ai-fishing-game](https://github.com/tutusagi/ai-fishing-game) that started this path |
 
 Three AIs and one human, none of whom are professional programmers. The code is proof that good design doesn't need a dev team — it needs good iteration.

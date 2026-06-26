@@ -1,0 +1,8 @@
+# Save files
+leek_save.json
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

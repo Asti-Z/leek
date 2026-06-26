@@ -1,8 +1,17 @@
-# Save files
+# Save file — each player has their own state
 leek_save.json
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# OS
 .DS_Store
 Thumbs.db
+
+# IDE
 .vscode/
 .idea/

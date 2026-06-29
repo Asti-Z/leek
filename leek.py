@@ -639,6 +639,7 @@ def _default_state(rng=None, career="retail"):
         # 崩盘
         "crash_started": False,
         "_crash_day": -1,
+        "_crash_start_nw": 0,
         "crash_sector": None,
         "crash_magnitude": 0.0,
         "crash_recovery_day": 0,
@@ -690,6 +691,8 @@ def _default_state(rng=None, career="retail"):
         # 天使投资人
         "angel_contributions": 0,
         "angel_appeals": [],
+        "pending_appeal": None,
+        "next_appeal_id": 0,
         "bankrupt_count": 0,
     }
 
@@ -767,6 +770,11 @@ def _tick(state):
             # 崩盘后自动转震荡
             state["market_cycle"] = "range"
             state["cycle_day"] = 0
+            # 统计：崩盘存活 + 崩盘中是否盈利
+            state["stats"]["crashes_survived"] += 1
+            crash_start_nw = state.get("_crash_start_nw", _start_cash(state))
+            if _nw(state) > crash_start_nw:
+                state["stats"]["profit_in_crash"] += 1
             cycle = MARKET_CYCLES["range"]
             state["cycle_min_duration"] = rng.randint(cycle["min_days"], cycle["max_days"])
             state["next_cycle_check_day"] = state["cycle_min_duration"]
@@ -793,6 +801,7 @@ def _tick(state):
             state["market_cycle"] = "crash"
             state["cycle_day"] = 0
             state["_crash_day"] = state["day"]
+            state["_crash_start_nw"] = _nw(state)
             cycle = MARKET_CYCLES["crash"]
             sec_name = SECTORS[state["crash_sector"]]["name"]
             events.append(("💥", f"{sec_name}板块突发崩盘！跌幅达 {state['crash_magnitude']*100:.0f}%！全市场恐慌！"))
@@ -928,27 +937,44 @@ def _tick(state):
         mood_line = _emotion_line(state)
         _add_journal(state, mood_icons[mi], mood_line)
 
-    # ── 14. 里程碑庆祝 ──
+    # ── 14. 盘中异动（持仓股大涨大跌提醒）──
+    for sid in STOCKS:
+        sh = state["holdings"].get(sid, 0)
+        if sh > 0 and len(state["prices_history"][sid]) >= 2:
+            prev = state["prices_history"][sid][-2]
+            cur = state["prices"][sid]
+            chg = (cur - prev) / prev if prev > 0 else 0
+            sname = STOCKS[sid]["name"]
+            cb = state["cost_basis"].get(sid, 0)
+            pos_pnl = (cur - cb) / cb * 100 if cb > 0 else 0
+            if chg >= 0.08:
+                events.append(("🚀", f"盘中异动！{sname} 暴涨 {chg*100:.0f}%！现价 {cur:.1f}（持仓浮{pos_pnl:+.0f}%）"))
+            elif chg <= -0.08:
+                events.append(("🔻", f"盘中急跌！{sname} 暴跌 {chg*100:.0f}%！现价 {cur:.1f}（持仓浮{pos_pnl:+.0f}%）。要止损吗？"))
+            elif chg <= -0.05:
+                events.append(("⚠️", f"{sname} 跌幅扩大至 {chg*100:.0f}%，注意风险。现价 {cur:.1f}。"))
+
+    # ── 15. 里程碑庆祝 ──
     celebration_events = _check_celebrations(state)
     events.extend(celebration_events)
 
-    # ── 15. 检查称号 ──
+    # ── 16. 检查称号 ──
     _check_titles(state)
 
-    # ── 16. 定期结算 ──
+    # ── 17. 定期结算 ──
     career_cfg = CAREERS.get(state.get("career", "retail"), CAREERS["retail"])
     review_days = career_cfg["review_days"]
     if state["day"] - state.get("last_settlement_day", 0) >= review_days:
         settlement_events = _monthly_settlement(state)
         events.extend(settlement_events)
 
-    # ── 17. 破产检查 ──
+    # ── 18. 破产检查 ──
     nw = _nw(state)
     if nw < 10:
         _handle_bankruptcy(state)
         events.append(("🏴‍☠️", f"技术性破产！净值仅 {nw:.0f} 元。天使投资人注入 200 元救济金。"))
 
-    # ── 18. 基金经理：仓位检查 + 客户赎回 ──
+    # ── 19. 基金经理：仓位检查 + 客户赎回 ──
     if state.get("career") == "fund":
         career_cfg = CAREERS["fund"]
         # 仓位要求
@@ -968,7 +994,25 @@ def _tick(state):
             state["fund_redemption_day"] = state["day"] + rng.randint(10, 20)
             events.append(("📤", f"客户赎回！撤回 {redempt_pct*100:.0f}% 资金（{redempt_amount:.0f} 元）。净值回撤触发了恐慌。"))
 
-    # ── 19. 被动收益（称号perk）──
+    # ── 20. 天使投资人超时兜底 ──
+    pending = state.get("pending_appeal")
+    if pending and state["day"] - pending["day"] >= 5:
+        # 5回合无人响应 → 自动按游戏规则审批
+        auto_amount = _auto_approve(state, pending["amount"])
+        if auto_amount > 0:
+            state["cash"] = round(state["cash"] + auto_amount, 2)
+            state["angel_contributions"] = state.get("angel_contributions", 0) + auto_amount
+            events.append(("⏰", f"天使投资人未回复，自动审批 {auto_amount} 元。"))
+        else:
+            events.append(("⏰", "天使投资人未回复，申请自动作废。"))
+        state["angel_appeals"].append({
+            "day": pending["day"], "amount": pending["amount"],
+            "approved": auto_amount, "reason": pending["reason"],
+            "reject_reason": "" if auto_amount > 0 else "超时自动拒绝",
+        })
+        state["pending_appeal"] = None
+
+    # ── 21. 被动收益（称号perk）──
     _apply_passive_perks(state, rng)
 
     _update_rng(state, rng)
@@ -1415,6 +1459,9 @@ def _exec_cmd(text, state):
 
         if c == "appeal":
             return _cmd_appeal(state, a)
+
+        if c == "respond":
+            return _cmd_respond(state, a)
 
         if c in ("journal", "j"):
             return _cmd_journal(state)
@@ -2893,77 +2940,99 @@ def _cmd_appeal(state, a):
     reason = " ".join(a[1:])
     rank = _trader_rank(state)
     nw_val = _nw(state)
-    bankrupt_count = state.get("bankrupt_count", 0)
-    consecutive_losses = state.get("consecutive_loss_months", 0)
-    angel_total = state.get("angel_contributions", 0)
 
-    # 审批逻辑
-    approved = 0
-    reject_reason = ""
-
-    if bankrupt_count >= 3:
-        reject_reason = "你已经破产三次了。天使投资人建议你换个策略。"
-    elif rank < 3 and nw_val < 300:
-        max_approve = min(300, max(100, nw_val * 2))
-        approved = min(amount, max_approve)
-        if amount > max_approve:
-            reject_reason = f"你的等级和净值不支持这么高的申请。最多批 {max_approve:.0f}。"
-    elif rank >= 3 and nw_val < 500:
-        max_approve = min(1000, max(300, nw_val * 5))
-        approved = min(amount, max_approve)
-    elif rank >= 5:
-        max_approve = min(5000, max(500, nw_val * 10))
-        approved = min(amount, max_approve)
-    elif rank >= 8:
-        max_approve = min(50000, amount)
-        approved = amount
-    elif consecutive_losses >= 3:
-        reject_reason = "连续亏损三个月，天使投资人拒绝追加资金。先止血。"
-    else:
-        approved = min(amount, 500)
-
-    idx = hash(f"{state['day']}_{amount}_angel") % len(_ANGEL_APPROVALS)
-    appeal_record = {
+    # 存储为 pending，等待用户（天使投资人）审批
+    appeal_id = state.get("next_appeal_id", 0)
+    state["next_appeal_id"] = appeal_id + 1
+    state["pending_appeal"] = {
+        "id": appeal_id,
         "day": state["day"],
         "amount": amount,
-        "approved": approved,
         "reason": reason,
-        "reject_reason": reject_reason,
+        "nw": nw_val,
+        "rank": rank,
     }
-    if "angel_appeals" not in state:
-        state["angel_appeals"] = []
-    state["angel_appeals"].append(appeal_record)
+
+    _tick(state)
+    _save(state)
+
+    lines = [
+        f"📨 致天使投资人（第{state['day']}天）：",
+        f"「{reason}」",
+        f"申请金额：{amount} 元 | 当前净值：{nw_val:.0f} 元 | 等级：{rank}",
+        f"",
+        f"⏳ 等待天使投资人回复……",
+        f"",
+        f"⚠️ ASK_USER:appeal:{appeal_id}:{amount}:{nw_val:.0f}:{rank}",
+        f"👉 用户请调用 respond {appeal_id} <批准金额>（0=拒绝）",
+    ]
+    return "\n".join(lines)
+
+
+def _auto_approve(state, amount):
+    """超时兜底：按游戏规则自动审批"""
+    rank = _trader_rank(state)
+    nw_val = _nw(state)
+    bankrupt_count = state.get("bankrupt_count", 0)
+    consecutive_losses = state.get("consecutive_loss_months", 0)
+
+    if bankrupt_count >= 3:
+        return 0
+    if rank < 3 and nw_val < 300:
+        return min(amount, min(300, max(100, int(nw_val * 2))))
+    if rank >= 3 and nw_val < 500:
+        return min(amount, min(1000, max(300, int(nw_val * 5))))
+    if rank >= 5:
+        return min(amount, min(5000, max(500, int(nw_val * 10))))
+    if rank >= 8:
+        return min(amount, 50000)
+    if consecutive_losses >= 3:
+        return 0
+    return min(amount, 500)
+
+
+def _cmd_respond(state, a):
+    """用户回复天使投资人申请"""
+    pending = state.get("pending_appeal")
+    if not pending:
+        return "当前没有待审批的融资申请。"
+    if len(a) < 1:
+        return f"格式：respond <批准金额>  如 respond 500（0=拒绝）。当前申请：{pending['amount']}元，理由：「{pending['reason']}」"
+    try:
+        approved = int(a[0])
+    except:
+        return "金额得是数字。如 respond 500 或 respond 0（拒绝）"
+
+    if approved < 0:
+        return "批准金额不能为负。"
+    if approved > pending["amount"]:
+        approved = pending["amount"]
 
     if approved > 0:
         state["cash"] = round(state["cash"] + approved, 2)
         state["angel_contributions"] = state.get("angel_contributions", 0) + approved
+        idx = hash(f"{pending['day']}_{approved}_angel") % len(_ANGEL_APPROVALS)
         angel_msg = _ANGEL_APPROVALS[idx]
-        lines = [
-            f"📨 致天使投资人：",
-            f"「{reason}」",
-            f"申请金额：{amount} 元 | 当前净值：{nw_val:.0f} 元 | 等级：{rank}",
-            f"",
-            f"👼 天使投资人回复：✅ 批准 {approved} 元",
-            f"「{angel_msg}」",
-            f"资金余额：{state['cash']:.0f} 元",
-        ]
+        result = f"👼 你批准了 {approved} 元。\n「{angel_msg}」\n资金余额：{state['cash']:.0f} 元。"
     else:
-        if not reject_reason:
-            reject_reason = _ANGEL_REJECTIONS[idx % len(_ANGEL_REJECTIONS)]
-        lines = [
-            f"📨 致天使投资人：",
-            f"「{reason}」",
-            f"申请金额：{amount} 元 | 当前净值：{nw_val:.0f} 元 | 等级：{rank}",
-            f"",
-            f"👼 天使投资人回复：❌ 申请被拒",
-            f"「{reject_reason}」",
-        ]
-        if consecutive_losses >= 2:
-            lines.append(f"💡 提示：先实现稳定盈利，天使投资人会改变态度。")
+        idx = hash(f"{pending['day']}_0_angel") % len(_ANGEL_REJECTIONS)
+        result = f"👼 你拒绝了融资申请。\n「{_ANGEL_REJECTIONS[idx]}」"
 
-    _tick(state)
+    # 记录
+    appeal_record = {
+        "day": pending["day"],
+        "amount": pending["amount"],
+        "approved": approved,
+        "reason": pending["reason"],
+        "reject_reason": "" if approved > 0 else "用户拒绝",
+    }
+    if "angel_appeals" not in state:
+        state["angel_appeals"] = []
+    state["angel_appeals"].append(appeal_record)
+    state["pending_appeal"] = None
+
     _save(state)
-    return "\n".join(lines)
+    return result
 
 
 def _emotion_line(state):
